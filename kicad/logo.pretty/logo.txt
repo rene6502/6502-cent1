@@ -1,0 +1,3 @@
+Size:   ~770x230
+Border: 4px
+Export: Negative, 600 dpi

@@ -1,0 +1,552 @@
+
+; 64tass Turbo Assembler Macro V1.56.2625 listing file
+; 64tass.exe --m65c02 --nostart --tab-size 2 --line-numbers --list s:\work\swdev\6502-cent1\monitor\monitor.lst --output s:\work\swdev\6502-cent1\monitor\monitor.bin s:\work\swdev\6502-cent1\monitor\monitor.asm
+; Sat Nov 27 18:20:39 2021
+
+;Line		;Offset	;Hex						;Monitor				;Source
+
+:1			;******  Processing input file: s:\work\swdev\6502-cent1\monitor\monitor.asm
+
+4				=1																			CLOCK_MHZ   = 1         ; // clock frequency in MHz
+7				=$7f20																	ACIA_BASE   = $7f20
+8				=32544																	ACIA_DATA   = ACIA_BASE + 0
+9				=32545																	ACIA_STATUS = ACIA_BASE + 1
+10			=32546																	ACIA_CMD    = ACIA_BASE + 2
+11			=32547																	ACIA_CTL    = ACIA_BASE + 3
+13			=">"																		PROMPT      = '>'
+14			=$0d																		CR          = $0d
+15			=$0a																		LF          = $0a
+16			=$08																		BS          = $08
+17			=82																			BUF_LEN     = 82
+21			>0020																		TEMP        .byte ?     ; general purpose byte, always assume that subroutines will change this
+22			>0021																		MSGL        .byte ?     ; message address LSB
+23			>0022																		MSGH        .byte ?     ; message address MSB
+24			>0023																		LD_CHECKSUM .byte ?
+25			>0024																		LD_ADDRESSL .byte ?
+26			>0025																		LD_ADDRESSH .byte ?
+27			>0026																		ADDR_STARTL .byte ?
+28			>0027																		ADDR_STARTH .byte ?
+29			>0028																		ADDR_ENDL   .byte ?
+30			>0029																		ADDR_ENDH   .byte ?
+31			>002a																		LINE_CNT    .byte ?
+32			>002b																		LINE_BUF    .fill BUF_LEN
+35			.8000																		reset:
+36			.8000		d8							cld							        cld             ; clear decimal mode
+37			.8001		20 18 83				jsr $8318				        jsr wait100us
+38			.8004		20 ed 82				jsr $82ed				        jsr serial_init
+39			.8007		a9 45						lda #$45				        lda #<MSG_WELCOME
+40			.8009		85 21						sta $21					        sta MSGL
+41			.800b		a9 83						lda #$83				        lda #>MSG_WELCOME
+42			.800d		85 22						sta $22					        sta MSGH
+43			.800f		20 28 83				jsr $8328				        jsr write_msg
+45			.8012																		ready:
+46			.8012		a9 00						lda #$00				        lda #0
+47			.8014		85 2a						sta $2a					        sta LINE_CNT
+48			.8016		a9 3e						lda #$3e				        lda #PROMPT
+49			.8018		20 f8 82				jsr $82f8				        jsr serial_out  ; show prompt
+51			.801b																		read_char:
+52			.801b		20 0d 83				jsr $830d				        jsr serial_wait
+53			.801e		20 f8 82				jsr $82f8				        jsr serial_out  ; echo
+54			.8021		20 d2 82				jsr $82d2				        jsr tolower     ; convert to lower case
+55			.8024		c9 0a						cmp #$0a				        cmp #LF
+56			.8026		f0 f3						beq $801b				        beq read_char   ; ignore line feed
+57			.8028		c9 0d						cmp #$0d				        cmp #CR
+58			.802a		f0 22						beq $804e				        beq newline
+59			.802c		a4 2a						ldy $2a					        ldy LINE_CNT
+60			.802e		c9 08						cmp #$08				        cmp #BS
+61			.8030		d0 0f						bne $8041				        bne _store_char
+62			.8032		88							dey							        dey             ; remove last char from buffer
+63			.8033		30 05						bmi $803a				        bmi _reset
+64			.8035		84 2a						sty $2a					        sty LINE_CNT
+65			.8037		4c 1b 80				jmp $801b				        jmp read_char
+67			.803a		a0 00						ldy #$00				_reset: ldy #0          ; beyond start
+68			.803c		84 2a						sty $2a					        sty LINE_CNT
+69			.803e		4c 1b 80				jmp $801b				        jmp read_char
+71			.8041																		_store_char:
+72			.8041		c0 51						cpy #$51				        cpy #BUF_LEN - 1
+73			.8043		b0 5c						bcs $80a1				        bcs overflow
+74			.8045		99 2b 00				sta $002b,y			        sta LINE_BUF,y
+75			.8048		c8							iny							        iny
+76			.8049		84 2a						sty $2a					        sty LINE_CNT
+77			.804b		4c 1b 80				jmp $801b				        jmp read_char
+79			.804e																		newline:
+80			.804e		20 38 83				jsr $8338				        jsr write_eol
+81			.8051		a5 2a						lda $2a					        lda LINE_CNT
+82			.8053		f0 bd						beq $8012				        beq ready       ; ignore emty lines
+83			.8055		a5 2b						lda $2b					        lda LINE_BUF
+84			.8057		c9 3f						cmp #$3f				        cmp #'?'        ; command "?": help
+85			.8059		d0 06						bne $8061				        bne _chk_l
+86			.805b		20 af 80				jsr $80af				        jsr cmd_help
+87			.805e		4c 12 80				jmp $8012				        jmp ready
+88			.8061																		_chk_l:
+89			.8061		c9 6c						cmp #$6c				        cmp #'l'        ; command "l": download
+90			.8063		d0 06						bne $806b				        bne _chk_r
+91			.8065		20 bb 80				jsr $80bb				        jsr cmd_download
+92			.8068		4c 12 80				jmp $8012				        jmp ready
+93			.806b																		_chk_r:
+94			.806b		c9 72						cmp #$72				        cmp #'r'        ; command "r": read memory
+95			.806d		d0 06						bne $8075				        bne _chk_w
+96			.806f		20 2d 81				jsr $812d				        jsr cmd_read
+97			.8072		4c 12 80				jmp $8012				        jmp ready
+98			.8075																		_chk_w:
+99			.8075		c9 77						cmp #$77				        cmp #'w'        ; command "w": write memory
+100			.8077		d0 06						bne $807f				        bne _chk_f
+101			.8079		20 ca 81				jsr $81ca				        jsr cmd_write
+102			.807c		4c 12 80				jmp $8012				        jmp ready
+103			.807f																		_chk_f:
+104			.807f		c9 66						cmp #$66				        cmp #'f'        ; command "f": fill memory
+105			.8081		d0 06						bne $8089				        bne _chk_g
+106			.8083		20 05 82				jsr $8205				        jsr cmd_fill
+107			.8086		4c 12 80				jmp $8012				        jmp ready
+109			.8089																		_chk_g:
+110			.8089		c9 67						cmp #$67				        cmp #'g'        ; command "g": run program
+111			.808b		d0 06						bne $8093				        bne unknown
+112			.808d		20 5d 82				jsr $825d				        jsr cmd_go
+113			.8090		4c 12 80				jmp $8012				        jmp ready
+115			.8093																		unknown:
+116			.8093		a9 53						lda #$53				        lda #<MSG_UNK_CMD
+117			.8095		85 21						sta $21					        sta MSGL
+118			.8097		a9 83						lda #$83				        lda #>MSG_UNK_CMD
+119			.8099		85 22						sta $22					        sta MSGH
+120			.809b		20 28 83				jsr $8328				        jsr write_msg
+121			.809e		4c 12 80				jmp $8012				        jmp ready
+123			.80a1																		overflow:
+124			.80a1		a9 b6						lda #$b6				        lda #<MSG_OVERFLOW
+125			.80a3		85 21						sta $21					        sta MSGL
+126			.80a5		a9 83						lda #$83				        lda #>MSG_OVERFLOW
+127			.80a7		85 22						sta $22					        sta MSGH
+128			.80a9		20 28 83				jsr $8328				        jsr write_msg
+129			.80ac		4c 12 80				jmp $8012				        jmp ready
+131			.80af																		cmd_help:
+132			.80af		a9 cd						lda #$cd				        lda #<MSG_HELP
+133			.80b1		85 21						sta $21					        sta MSGL
+134			.80b3		a9 83						lda #$83				        lda #>MSG_HELP
+135			.80b5		85 22						sta $22					        sta MSGH
+136			.80b7		20 28 83				jsr $8328				        jsr write_msg
+137			.80ba		60							rts							        rts
+144			.80bb																		cmd_download:
+145			.80bb		a9 65						lda #$65				        lda #<MSG_DL_START
+146			.80bd		85 21						sta $21					        sta MSGL
+147			.80bf		a9 83						lda #$83				        lda #>MSG_DL_START
+148			.80c1		85 22						sta $22					        sta MSGH
+149			.80c3		20 28 83				jsr $8328				        jsr write_msg
+151			.80c6																		_read_start:
+152			.80c6		20 0d 83				jsr $830d				        jsr serial_wait
+153			.80c9		c9 3a						cmp #$3a				        cmp #':'
+154			.80cb		d0 f9						bne $80c6				        bne _read_start
+156			.80cd		a9 00						lda #$00				        lda #$00
+157			.80cf		85 23						sta $23					        sta LD_CHECKSUM ; reset checksum
+158			.80d1																		_next:
+159			.80d1		20 a2 82				jsr $82a2				        jsr read_hex    ; read byte count
+160			.80d4		aa							tax							        tax             ; x -> byte count
+161			.80d5		20 a2 82				jsr $82a2				        jsr read_hex    ; read address MSB
+162			.80d8		85 25						sta $25					        sta LD_ADDRESSH
+163			.80da		20 a2 82				jsr $82a2				        jsr read_hex    ; read address LSB
+164			.80dd		85 24						sta $24					        sta LD_ADDRESSL
+165			.80df		20 a2 82				jsr $82a2				        jsr read_hex    ; read record type
+166			.80e2		f0 17						beq $80fb				        beq _data       ; 0 -> data
+167			.80e4		c9 01						cmp #$01				        cmp #$01        ; 1 -> eof
+168			.80e6		d0 2d						bne $8115				        bne _err_unk
+169			.80e8																		_eof:
+170			.80e8		20 a2 82				jsr $82a2				        jsr read_hex    ; read checksum
+171			.80eb		a5 23						lda $23					        lda LD_CHECKSUM
+172			.80ed		d0 32						bne $8121				        bne _err_cks    ; checksum must be 0
+174			.80ef		a9 78						lda #$78				        lda #<MSG_DL_END
+175			.80f1		85 21						sta $21					        sta MSGL
+176			.80f3		a9 83						lda #$83				        lda #>MSG_DL_END
+177			.80f5		85 22						sta $22					        sta MSGH
+178			.80f7		20 28 83				jsr $8328				        jsr write_msg
+180			.80fa		60							rts							        rts
+181			.80fb																		_data:
+182			.80fb		a0 00						ldy #$00				        ldy #0          ; x -> byte index
+183			.80fd																		_read_byte:
+184			.80fd		20 a2 82				jsr $82a2				        jsr read_hex    ; read data byte
+185			.8100		91 24						sta ($24),y			        sta (LD_ADDRESSL),y
+186			.8102		c8							iny							        iny
+187			.8103		ca							dex							        dex             ; decrement byte count
+188			.8104		d0 f7						bne $80fd				        bne _read_byte
+189			.8106		20 a2 82				jsr $82a2				        jsr read_hex    ; read checksum
+190			.8109		a5 23						lda $23					        lda LD_CHECKSUM
+191			.810b		d0 14						bne $8121				        bne _err_cks    ; checksum must be 0
+192			.810d		a9 2e						lda #$2e				        lda #'.'        ; send '.' as acknowledgmenet
+193			.810f		20 f8 82				jsr $82f8				        jsr serial_out
+194			.8112		4c c6 80				jmp $80c6				        jmp _read_start;
+196			.8115																		_err_unk:
+197			.8115		a9 8f						lda #$8f				        lda #<MSG_UNK_REC
+198			.8117		85 21						sta $21					        sta MSGL
+199			.8119		a9 83						lda #$83				        lda #>MSG_UNK_REC
+200			.811b		85 22						sta $22					        sta MSGH
+201			.811d		20 28 83				jsr $8328				        jsr write_msg
+202			.8120		60							rts							        rts
+204			.8121																		_err_cks:
+205			.8121		a9 a5						lda #$a5				        lda #<MSG_CKS_ERR
+206			.8123		85 21						sta $21					        sta MSGL
+207			.8125		a9 83						lda #$83				        lda #>MSG_CKS_ERR
+208			.8127		85 22						sta $22					        sta MSGH
+209			.8129		20 28 83				jsr $8328				        jsr write_msg
+210			.812c		60							rts							        rts
+216			.812d																		cmd_read:
+217			.812d		a5 2a						lda $2a					        lda LINE_CNT
+218			.812f		c9 05						cmp #$05				        cmp #5
+219			.8131		f0 08						beq $813b				        beq _line
+220			.8133		c9 0a						cmp #$0a				        cmp #10
+221			.8135		f0 29						beq $8160				        beq _block
+222			.8137		20 73 82				jsr $8273				        jsr show_syntax
+223			.813a		60							rts							        rts
+225			.813b																		_line:
+226			.813b		a0 01						ldy #$01				        ldy #1
+227			.813d		20 76 81				jsr $8176				        jsr read_addr
+228			.8140		85 27						sta $27					        sta ADDR_STARTH
+229			.8142		86 26						stx $26					        stx ADDR_STARTL
+230			.8144		8a							txa							        txa
+231			.8145		18							clc							        clc             ; end address = start address + 8
+232			.8146		69 07						adc #$07				        adc #7
+233			.8148		85 28						sta $28					        sta ADDR_ENDL
+234			.814a		a5 27						lda $27					        lda ADDR_STARTH
+235			.814c		69 00						adc #$00				        adc #0
+236			.814e		85 29						sta $29					        sta ADDR_ENDH
+237			.8150		f0 04						beq $8156				        beq _overflow
+238			.8152		20 8d 81				jsr $818d				        jsr read_block
+239			.8155		60							rts							        rts
+241			.8156																		_overflow:
+242			.8156		a9 ff						lda #$ff				        lda #$ff
+243			.8158		85 28						sta $28					        sta ADDR_ENDL
+244			.815a		85 29						sta $29					        sta ADDR_ENDH
+245			.815c		20 8d 81				jsr $818d				        jsr read_block
+246			.815f		60							rts							        rts
+248			.8160																		_block:
+249			.8160		a0 01						ldy #$01				        ldy #1
+250			.8162		20 76 81				jsr $8176				        jsr read_addr
+251			.8165		85 27						sta $27					        sta ADDR_STARTH
+252			.8167		86 26						stx $26					        stx ADDR_STARTL
+253			.8169		a0 06						ldy #$06				        ldy #6
+254			.816b		20 76 81				jsr $8176				        jsr read_addr
+255			.816e		85 29						sta $29					        sta ADDR_ENDH
+256			.8170		86 28						stx $28					        stx ADDR_ENDL
+257			.8172		20 8d 81				jsr $818d				        jsr read_block
+258			.8175		60							rts							        rts
+264			.8176																		read_addr:
+265			.8176		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+266			.8179		c8							iny							        iny
+267			.817a		b6 2b						ldx $2b,y				        ldx LINE_BUF,y
+268			.817c		c8							iny							        iny
+269			.817d		20 dd 82				jsr $82dd				        jsr bytetobin
+270			.8180		48							pha							        pha
+271			.8181		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+272			.8184		c8							iny							        iny
+273			.8185		b6 2b						ldx $2b,y				        ldx LINE_BUF,y
+274			.8187		20 dd 82				jsr $82dd				        jsr bytetobin
+275			.818a		aa							tax							        tax
+276			.818b		68							pla							        pla
+277			.818c		60							rts							        rts
+280			.818d																		read_block:
+281			.818d		a5 27						lda $27					        lda ADDR_STARTH
+282			.818f		20 93 82				jsr $8293				        jsr write_byte
+283			.8192		a5 26						lda $26					        lda ADDR_STARTL
+284			.8194		20 93 82				jsr $8293				        jsr write_byte
+285			.8197		a0 00						ldy #$00				        ldy #0
+286			.8199																		_byte:
+287			.8199		a9 20						lda #$20				        lda #' '
+288			.819b		20 f8 82				jsr $82f8				        jsr serial_out
+289			.819e		84 20						sty $20					        sty TEMP
+290			.81a0		a0 00						ldy #$00				        ldy #0
+291			.81a2		b1 26						lda ($26),y			        lda (ADDR_STARTL),y
+292			.81a4		a4 20						ldy $20					        ldy TEMP
+293			.81a6		20 93 82				jsr $8293				        jsr write_byte
+294			.81a9		a5 26						lda $26					        lda ADDR_STARTL ; check end address LSB
+295			.81ab		c5 28						cmp $28					        cmp ADDR_ENDL
+296			.81ad		d0 0a						bne $81b9				        bne _next
+297			.81af		a5 27						lda $27					        lda ADDR_STARTH ; check end address MSB
+298			.81b1		c5 29						cmp $29					        cmp ADDR_ENDH
+299			.81b3		d0 04						bne $81b9				        bne _next
+300			.81b5		20 38 83				jsr $8338				        jsr write_eol
+301			.81b8		60							rts							        rts
+302			.81b9																		_next:
+303			.81b9		e6 26						inc $26					        inc ADDR_STARTL ; increment start address
+304			.81bb		d0 02						bne $81bf				        bne _cont
+305			.81bd		e6 27						inc $27					        inc ADDR_STARTH
+306			.81bf																		_cont:
+307			.81bf		c8							iny							        iny
+308			.81c0		c0 08						cpy #$08				        cpy #8
+309			.81c2		90 d5						bcc $8199				        bcc _byte
+310			.81c4		20 38 83				jsr $8338				        jsr write_eol
+311			.81c7		4c 8d 81				jmp $818d				        jmp read_block
+315			.81ca																		cmd_write:
+316			.81ca		a5 2a						lda $2a					        lda LINE_CNT
+317			.81cc		c9 08						cmp #$08				        cmp #8          ; min line length = 8 ("w1000:00")
+318			.81ce		b0 04						bcs $81d4				        bcs _cont
+319			.81d0																		_error:
+320			.81d0		20 73 82				jsr $8273				        jsr show_syntax
+321			.81d3		60							rts							        rts
+322			.81d4																		_cont:
+323			.81d4		a0 05						ldy #$05				        ldy #5
+324			.81d6		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+325			.81d9		c9 3a						cmp #$3a				        cmp #':'
+326			.81db		d0 f3						bne $81d0				        bne _error
+327			.81dd		a0 01						ldy #$01				        ldy #1
+328			.81df		20 76 81				jsr $8176				        jsr read_addr
+329			.81e2		85 27						sta $27					        sta ADDR_STARTH
+330			.81e4		86 26						stx $26					        stx ADDR_STARTL
+331			.81e6		a0 06						ldy #$06				        ldy #6 ; first byte
+332			.81e8																		_next:
+333			.81e8		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+334			.81eb		c8							iny							        iny
+335			.81ec		b6 2b						ldx $2b,y				        ldx LINE_BUF,y
+336			.81ee		c8							iny							        iny
+337			.81ef		20 dd 82				jsr $82dd				        jsr bytetobin
+338			.81f2		84 20						sty $20					        sty TEMP
+339			.81f4		a0 00						ldy #$00				        ldy #0
+340			.81f6		91 26						sta ($26),y			        sta (ADDR_STARTL),y
+341			.81f8		a4 20						ldy $20					        ldy TEMP
+342			.81fa		e6 26						inc $26					        inc ADDR_STARTL
+343			.81fc		d0 02						bne $8200				        bne _chk_end
+344			.81fe		e6 27						inc $27					        inc ADDR_STARTH
+345			.8200																		_chk_end:
+346			.8200		c4 2a						cpy $2a					        cpy LINE_CNT
+347			.8202		90 e4						bcc $81e8				        bcc _next
+348			.8204		60							rts							        rts
+352			.8205																		cmd_fill:
+353			.8205		a5 2a						lda $2a					        lda LINE_CNT
+354			.8207		c9 0d						cmp #$0d				        cmp #13
+355			.8209		d0 4e						bne $8259				        bne _error
+356			.820b		a0 05						ldy #$05				        ldy #5
+357			.820d		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+358			.8210		c9 2d						cmp #$2d				        cmp #'-'
+359			.8212		d0 45						bne $8259				        bne _error
+360			.8214		a0 0a						ldy #$0a				        ldy #10
+361			.8216		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+362			.8219		c9 3a						cmp #$3a				        cmp #':'
+363			.821b		d0 3c						bne $8259				        bne _error
+364			.821d		a0 01						ldy #$01				        ldy #1
+365			.821f		20 76 81				jsr $8176				        jsr read_addr
+366			.8222		85 27						sta $27					        sta ADDR_STARTH
+367			.8224		86 26						stx $26					        stx ADDR_STARTL
+368			.8226		a0 06						ldy #$06				        ldy #6
+369			.8228		20 76 81				jsr $8176				        jsr read_addr
+370			.822b		85 29						sta $29					        sta ADDR_ENDH
+371			.822d		86 28						stx $28					        stx ADDR_ENDL
+372			.822f		a0 0b						ldy #$0b				        ldy #11
+373			.8231		b9 2b 00				lda $002b,y			        lda LINE_BUF,y
+374			.8234		c8							iny							        iny
+375			.8235		b6 2b						ldx $2b,y				        ldx LINE_BUF,y
+376			.8237		c8							iny							        iny
+377			.8238		20 dd 82				jsr $82dd				        jsr bytetobin
+378			.823b		85 20						sta $20					        sta TEMP
+379			.823d																		_next:
+380			.823d		a0 00						ldy #$00				        ldy #0
+381			.823f		a5 20						lda $20					        lda TEMP
+382			.8241		91 26						sta ($26),y			        sta (ADDR_STARTL),y
+383			.8243		a5 26						lda $26					        lda ADDR_STARTL ; check end address LSB
+384			.8245		c5 28						cmp $28					        cmp ADDR_ENDL
+385			.8247		d0 07						bne $8250				        bne _incr
+386			.8249		a5 27						lda $27					        lda ADDR_STARTH ; check end address MSB
+387			.824b		c5 29						cmp $29					        cmp ADDR_ENDH
+388			.824d		d0 01						bne $8250				        bne _incr
+389			.824f		60							rts							        rts
+390			.8250																		_incr:
+391			.8250		e6 26						inc $26					        inc ADDR_STARTL ; increment start address
+392			.8252		d0 02						bne $8256				        bne _cont
+393			.8254		e6 27						inc $27					        inc ADDR_STARTH
+394			.8256																		_cont:
+395			.8256		4c 3d 82				jmp $823d				        jmp _next
+396			.8259																		_error:
+397			.8259		20 73 82				jsr $8273				        jsr show_syntax
+398			.825c		60							rts							        rts
+402			.825d																		cmd_go:
+403			.825d		a5 2a						lda $2a					        lda LINE_CNT
+404			.825f		c9 05						cmp #$05				        cmp #5
+405			.8261		d0 0c						bne $826f				        bne _error
+406			.8263		a0 01						ldy #$01				        ldy #1
+407			.8265		20 76 81				jsr $8176				        jsr read_addr
+408			.8268		85 27						sta $27					        sta ADDR_STARTH
+409			.826a		86 26						stx $26					        stx ADDR_STARTL
+410			.826c		6c 26 00				jmp ($0026)			        jmp (ADDR_STARTL)
+411			.826f																		_error:
+412			.826f		20 73 82				jsr $8273				        jsr show_syntax
+413			.8272		60							rts							        rts
+415			.8273																		show_syntax:
+416			.8273		a9 a5						lda #$a5				        lda #<MSG_SYNTAX
+417			.8275		85 21						sta $21					        sta MSGL
+418			.8277		a9 84						lda #$84				        lda #>MSG_SYNTAX
+419			.8279		85 22						sta $22					        sta MSGH
+420			.827b		20 28 83				jsr $8328				        jsr write_msg
+421			.827e		60							rts							        rts
+425			.827f																		write_nibble:
+426			.827f		29 0f						and #$0f				        and #$0f
+427			.8281		c9 0a						cmp #$0a				        cmp #10
+428			.8283		90 07						bcc $828c				        bcc _digit
+429			.8285		18							clc							        clc
+430			.8286		69 57						adc #$57				        adc #'a'-10
+431			.8288		20 f8 82				jsr $82f8				        jsr serial_out
+432			.828b		60							rts							        rts
+433			.828c																		_digit:
+434			.828c		18							clc							        clc
+435			.828d		69 30						adc #$30				        adc #'0'
+436			.828f		20 f8 82				jsr $82f8				        jsr serial_out
+437			.8292		60							rts							        rts
+441			.8293																		write_byte:
+442			.8293		aa							tax							        tax
+443			.8294		4a							lsr a						        lsr
+444			.8295		4a							lsr a						        lsr
+445			.8296		4a							lsr a						        lsr
+446			.8297		4a							lsr a						        lsr
+447			.8298		20 7f 82				jsr $827f				        jsr write_nibble ; write upper nibble
+448			.829b		8a							txa							        txa
+449			.829c		29 0f						and #$0f				        and #$0f
+450			.829e		20 7f 82				jsr $827f				        jsr write_nibble ; write lower nibble
+451			.82a1		60							rts							        rts
+456			.82a2																		read_hex:
+457			.82a2		20 0d 83				jsr $830d				        jsr serial_wait
+458			.82a5		20 c0 82				jsr $82c0				        jsr hextobin
+459			.82a8		0a							asl a						        asl
+460			.82a9		0a							asl a						        asl
+461			.82aa		0a							asl a						        asl
+462			.82ab		0a							asl a						        asl
+463			.82ac		85 20						sta $20					        sta TEMP        ; store upper nibble
+464			.82ae		20 0d 83				jsr $830d				        jsr serial_wait
+465			.82b1		20 c0 82				jsr $82c0				        jsr hextobin
+466			.82b4		05 20						ora $20					        ora TEMP
+467			.82b6		85 20						sta $20					        sta TEMP
+468			.82b8		18							clc							        clc ; update checksum
+469			.82b9		65 23						adc $23					        adc LD_CHECKSUM
+470			.82bb		85 23						sta $23					        sta LD_CHECKSUM
+471			.82bd		a5 20						lda $20					        lda TEMP
+472			.82bf		60							rts							        rts
+477			.82c0																		hextobin:
+478			.82c0		c9 39						cmp #$39				        cmp #'9'
+479			.82c2		b0 06						bcs $82ca				        bcs _alpha
+480			.82c4		38							sec							        sec
+481			.82c5		e9 30						sbc #$30				        sbc #'0'
+482			.82c7		29 0f						and #$0f				        and #$0f
+483			.82c9		60							rts							        rts
+484			.82ca																		_alpha:
+485			.82ca		09 20						ora #$20				        ora  #%00100000 ; convert to lower case
+486			.82cc		38							sec							        sec
+487			.82cd		e9 57						sbc #$57				        sbc #'a'-10
+488			.82cf		29 0f						and #$0f				        and #$0f
+489			.82d1		60							rts							        rts
+494			.82d2																		tolower:
+495			.82d2		c9 41						cmp #$41				        cmp #'A'
+496			.82d4		90 06						bcc $82dc				        bcc _not_upper
+497			.82d6		c9 5a						cmp #$5a				        cmp #'Z'
+498			.82d8		b0 02						bcs $82dc				        bcs _not_upper
+499			.82da		09 20						ora #$20				        ora  #%00100000 ; set bit 5 (A=$41, a=$61)
+500			.82dc																		_not_upper:
+501			.82dc		60							rts							        rts
+507			.82dd																		bytetobin:
+508			.82dd		20 c0 82				jsr $82c0				        jsr hextobin
+509			.82e0		0a							asl a						        asl
+510			.82e1		0a							asl a						        asl
+511			.82e2		0a							asl a						        asl
+512			.82e3		0a							asl a						        asl
+513			.82e4		85 20						sta $20					        sta TEMP        ; store upper nibble
+514			.82e6		8a							txa							        txa
+515			.82e7		20 c0 82				jsr $82c0				        jsr hextobin
+516			.82ea		05 20						ora $20					        ora TEMP
+517			.82ec		60							rts							        rts
+520			.82ed																		serial_init:
+521			.82ed		a9 10						lda #$10				        lda #%00010000  ; 1 stop bit, 8 data bits, 115200bps, internal clock
+522			.82ef		8d 23 7f				sta $7f23				        sta ACIA_CTL
+523			.82f2		a9 0b						lda #$0b				        lda #%00001011  ; no parity, no echo, no TX interrupts, /RTS=low, no RX interrupts, /DTR=low
+524			.82f4		8d 22 7f				sta $7f22				        sta ACIA_CMD
+525			.82f7		60							rts							        rts
+530			.82f8																		serial_out:
+531			.82f8		8d 20 7f				sta $7f20				        sta ACIA_DATA
+532			.82fb		20 18 83				jsr $8318				        jsr wait100us   ; 115200bps -> 87us/character
+533			.82fe		60							rts							        rts
+538			.82ff																		serial_in:
+539			.82ff		ad 21 7f				lda $7f21				        lda  ACIA_STATUS
+540			.8302		29 08						and #$08				        and #%00001000  ; bit3 = Receiver Data Register Full
+541			.8304		f0 05						beq $830b				        beq _empty
+542			.8306		ad 20 7f				lda $7f20				        lda ACIA_DATA
+543			.8309		38							sec							        sec
+544			.830a		60							rts							        rts
+545			.830b																		_empty:
+546			.830b		18							clc							        clc
+547			.830c		60							rts							        rts
+552			.830d																		serial_wait:
+553			.830d		20 ff 82				jsr $82ff				        jsr serial_in
+554			.8310		90 fb						bcc $830d				        bcc serial_wait
+555			.8312		60							rts							        rts
+558			.8313																		wait20clk:
+559			.8313		ea							nop							        nop ; CYC=2
+560			.8314		ea							nop							        nop ; CYC=2
+561			.8315		ea							nop							        nop ; CYC=2
+562			.8316		ea							nop							        nop ; CYC=2
+563			.8317		60							rts							        rts ; CYC=12 (jsr+rts)
+567			.8318																		wait100us:
+568			.8318		84 20						sty $20					        sty TEMP           ; CYC=3
+569			.831a		a0 03						ldy #$03				        ldy #4*CLOCK_MHZ-1 ; CYC=2
+570			.831c																		_loop:
+571			.831c		20 13 83				jsr $8313				        jsr wait20clk
+572			.831f		88							dey							        dey       ; CYC=2
+573			.8320		d0 fa						bne $831c				        bne _loop ; CYC=3
+574			.8322		ea							nop							        nop       ; CYC=2
+575			.8323		ea							nop							        nop       ; CYC=2
+576			.8324		ea							nop							        nop       ; CYC=2
+577			.8325		a4 20						ldy $20					        ldy TEMP  ; CYC=4
+578			.8327		60							rts							        rts       ; CYC=12 (jsr+rts)
+580			.8328																		write_msg:
+581			.8328		a0 00						ldy #$00				        ldy #$0
+582			.832a																		_loop:
+583			.832a		b1 21						lda ($21),y			        lda (MSGL),y
+584			.832c		f0 06						beq $8334				        beq _done
+585			.832e		20 f8 82				jsr $82f8				        jsr serial_out
+586			.8331		c8							iny							        iny
+587			.8332		d0 f6						bne $832a				        bne _loop
+588			.8334																		_done:
+589			.8334		60							rts							        rts
+591			.8335																		write_char:
+592			.8335		20 f8 82				jsr $82f8				        jsr serial_out
+593			.8338																		write_eol:
+594			.8338		a9 0d						lda #$0d				        lda #CR
+595			.833a		20 f8 82				jsr $82f8				        jsr serial_out
+596			.833d		a9 0a						lda #$0a				        lda #LF
+597			.833f		20 f8 82				jsr $82f8				        jsr serial_out
+598			.8342		60							rts							        rts
+600			.8343																		nmi:
+601			.8343		40							rti							        rti
+603			.8344																		irq:
+604			.8344		40							rti							        rti
+606			>8345		4d 6f 6e 69 74 6f 72 20					MSG_WELCOME:   .text "Monitor 1.0", CR, LF, 0
+				>834d		31 2e 30 0d 0a 00
+607			>8353		75 6e 6b 6e 6f 77 6e 20					MSG_UNK_CMD:   .text "unknown command", CR, LF, 0
+				>835b		63 6f 6d 6d 61 6e 64 0d 0a 00
+608			>8365		64 6f 77 6e 6c 6f 61 64					MSG_DL_START:  .text "download started", CR, LF, 0
+				>836d		20 73 74 61 72 74 65 64 0d 0a 00
+609			>8378		0d 0a 64 6f 77 6e 6c 6f					MSG_DL_END:    .text  CR, LF, "download succeeded", CR, LF, 0
+				>8380		61 64 20 73 75 63 63 65 65 64 65 64 0d 0a 00
+610			>838f		75 6e 6b 6e 6f 77 6e 20					MSG_UNK_REC:   .text "unknown record type", CR, LF, 0
+				>8397		72 65 63 6f 72 64 20 74 79 70 65 0d 0a 00
+611			>83a5		63 68 65 63 6b 73 75 6d					MSG_CKS_ERR:   .text "checksum error", CR, LF, 0
+				>83ad		20 65 72 72 6f 72 0d 0a 00
+612			>83b6		6c 69 6e 65 20 62 75 66					MSG_OVERFLOW:  .text "line buffer overlfow", CR, LF, 0
+				>83be		66 65 72 20 6f 76 65 72 6c 66 6f 77 0d 0a 00
+613			>83cd		3f 20 20 20 20 20 20 20					MSG_HELP:      .text "?              show help", CR, LF
+				>83d5		20 20 20 20 20 20 20 73 68 6f 77 20 68 65 6c 70
+				>83e5		0d 0a
+614			>83e7		6c 20 20 20 20 20 20 20					               .text "l              start intel hex loader", CR, LF
+				>83ef		20 20 20 20 20 20 20 73 74 61 72 74 20 69 6e 74
+				>83ff		65 6c 20 68 65 78 20 6c 6f 61 64 65 72 0d 0a
+615			>840e		72 31 30 30 30 20 20 20					               .text "r1000          read memory line", CR, LF
+				>8416		20 20 20 20 20 20 20 72 65 61 64 20 6d 65 6d 6f
+				>8426		72 79 20 6c 69 6e 65 0d 0a
+616			>842f		72 31 30 30 30 2d 31 30					               .text "r1000-101f     read memory block", CR, LF
+				>8437		31 66 20 20 20 20 20 72 65 61 64 20 6d 65 6d 6f
+				>8447		72 79 20 62 6c 6f 63 6b 0d 0a
+617			>8451		77 31 30 30 30 3a 30 30					               .text "w1000:0011aabb write block", CR, LF
+				>8459		31 31 61 61 62 62 20 77 72 69 74 65 20 62 6c 6f
+				>8469		63 6b 0d 0a
+618			>846d		66 31 30 30 30 2d 31 30					               .text "f1000-1010:ea  fill block", CR, LF
+				>8475		31 30 3a 65 61 20 20 66 69 6c 6c 20 62 6c 6f 63
+				>8485		6b 0d 0a
+619			>8488		67 31 30 30 30 20 20 20					               .text "g1000          run program", CR, LF, 0
+				>8490		20 20 20 20 20 20 20 72 75 6e 20 70 72 6f 67 72
+				>84a0		61 6d 0d 0a 00
+620			>84a5		73 79 6e 74 61 78 20 65					MSG_SYNTAX:    .text "syntax error", CR, LF, 0
+				>84ad		72 72 6f 72 0d 0a 00
+623			>fffa		43 83														        .word nmi       ; NMI
+624			>fffc		00 80														        .word reset     ; RESET
+625			>fffe		44 83														        .word irq       ; IRQ/BRK
+
+;******  End of listing
