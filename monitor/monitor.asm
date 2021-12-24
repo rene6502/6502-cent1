@@ -17,7 +17,7 @@ BS          = $08
 BUF_LEN     = 82
 
 ; zero page
-            .virtual $20
+            .virtual $a0
 TEMP        .byte ?     ; general purpose byte, always assume that subroutines will change this
 MSGL        .byte ?     ; message address LSB
 MSGH        .byte ?     ; message address MSB
@@ -30,6 +30,7 @@ ADDR_ENDL   .byte ?
 ADDR_ENDH   .byte ?
 LINE_CNT    .byte ?
 LINE_BUF    .fill BUF_LEN
+LINE_BUFEND ; must be < $0100
             .endvirtual
 
 reset:
@@ -150,6 +151,8 @@ cmd_download:
 
 _read_start:
         jsr serial_wait
+        cmp #$1b ; ESC
+        beq _err_abort
         cmp #':'
         bne _read_start
 
@@ -190,7 +193,7 @@ _read_byte:
         lda LD_CHECKSUM
         bne _err_cks    ; checksum must be 0
         lda #'.'        ; send '.' as acknowledgmenet
-        jsr serial_out
+        jsr serial_out_no_wait
         jmp _read_start;
 
 _err_unk:
@@ -205,6 +208,14 @@ _err_cks:
         lda #<MSG_CKS_ERR
         sta MSGL
         lda #>MSG_CKS_ERR
+        sta MSGH
+        jsr write_msg
+        rts
+
+_err_abort:
+        lda #<MSG_DL_ABORT
+        sta MSGL
+        lda #>MSG_DL_ABORT
         sta MSGH
         jsr write_msg
         rts
@@ -475,9 +486,9 @@ read_hex:
 ; A(in) = hex character
 ; A(out) = binary, only valid if input is [0-9a-fA-F]
 hextobin:
-        cmp #'9'
-        bcs _alpha
-        sec
+        cmp #'A'
+        bcs _alpha ; char >= 'A'
+        sec ; else assume char is decimal digit
         sbc #'0'
         and #$0f
         rts
@@ -531,6 +542,14 @@ serial_out:
         sta ACIA_DATA
         jsr wait100us   ; 115200bps -> 87us/character
         rts
+
+; writes character to serial interface
+; may be called each 100us only
+; A(in) = character to sent
+serial_out_no_wait:
+        sta ACIA_DATA
+        jsr wait100us   ; 115200bps -> 87us/character
+        rts        
 
 ; reads character from serial interface
 ; A(out) = character received
@@ -603,10 +622,11 @@ nmi:
 irq:
         rti
                 
-MSG_WELCOME:   .text "Monitor 1.0", CR, LF, 0
+MSG_WELCOME:   .text "Monitor 1.0.1", CR, LF, 0
 MSG_UNK_CMD:   .text "unknown command", CR, LF, 0
 MSG_DL_START:  .text "download started", CR, LF, 0
 MSG_DL_END:    .text  CR, LF, "download succeeded", CR, LF, 0
+MSG_DL_ABORT:  .text  CR, LF, "download aborted", CR, LF, 0
 MSG_UNK_REC:   .text "unknown record type", CR, LF, 0
 MSG_CKS_ERR:   .text "checksum error", CR, LF, 0
 MSG_OVERFLOW:  .text "line buffer overlfow", CR, LF, 0
