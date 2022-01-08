@@ -9,7 +9,7 @@ A single board computer based on the W65C02S CPU.
 - ACIA W65C51N
 - Serial interface via RS232 DB9 or via USB
 - Option to power via USB
-- Minimal monitor with Intel hex download
+- Minimal monitor with xmodem upload
 
 ## Demo
 [This](examples/running_light.mp4) video shows the system in action.
@@ -51,12 +51,11 @@ All assembly programs must be built with [64tass](https://sourceforge.net/projec
   echoes received character on serial port
 
 ### Enhanced BASIC  
-downloads and patche source code with  [this](basic/build.sh) script
+downloads and patches source code with  [this](basic/build.sh) script
 ![](./basic/basic.gif)
  
 ### Monitor
-Simple [monitor](monitor/monitor.asm) program to download and run a program using intel hex format.  
-Use the --intel-hex of 64tass to generate intel hex.
+Simple [monitor](monitor/monitor.asm) program to upload and run a program using xmodem protocol.  
 ![](./monitor/monitor.png)
 
 ## Memory Map

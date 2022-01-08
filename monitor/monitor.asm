@@ -3,6 +3,8 @@
         
 CLOCK_MHZ   = 1         ; // clock frequency in MHz
 
+RAM_END     = $3fff
+
 ; 65C51 ACIA
 ACIA_BASE   = $7f20
 ACIA_DATA   = ACIA_BASE + 0
@@ -14,23 +16,52 @@ PROMPT      = '>'
 CR          = $0d
 LF          = $0a
 BS          = $08
-BUF_LEN     = 82
+ESC         = $1b
+LINE_LEN    = 82
+XM_BUF_LEN  = 132
+
+XM_ERR_TIMEOUT = 1
+XM_ERR_BLOCKNO = 2
+XM_ERR_SEQ     = 3
+XM_ERR_CKS     = 4
+
+SOH         = $01
+EOT         = $04
+ACK         = $06
+NAK         = $15
+CAN         = $18
 
 ; zero page
-            .virtual $a0
-TEMP        .byte ?     ; general purpose byte, always assume that subroutines will change this
-MSGL        .byte ?     ; message address LSB
-MSGH        .byte ?     ; message address MSB
-LD_CHECKSUM .byte ?
-LD_ADDRESSL .byte ?
-LD_ADDRESSH .byte ?
-ADDR_STARTL .byte ?
+            .virtual $e0
+TEMP        .byte ? ; general purpose byte, always assume that subroutines will change this
+TEMP_X      .byte ? ; X register backup
+TEMP_Y      .byte ? ; Y register backup
+MSGL        .byte ? ; message address LSB
+MSGH        .byte ? ; message address MSB
+ADDR_STARTL .byte ? ; start address
 ADDR_STARTH .byte ?
-ADDR_ENDL   .byte ?
-ADDR_ENDH   .byte ?
-LINE_CNT    .byte ?
-LINE_BUF    .fill BUF_LEN
-LINE_BUFEND ; must be < $0100
+ADDR_ENDL   .byte ? ; end address
+ADDR_ENDH   .byte ? ;
+            .align 8
+XM_ERROR    .byte ? ; xmodem last error
+XM_BLK_CNT  .byte ? ; xmodem expected block number
+XM_BLK      .byte ? ; xmodem received block number
+XM_CKS      .byte ? ; xmodem checksum
+XM_ADDRL    .byte ? ; xmodem destination address
+XM_ADDRH    .byte ?
+XM_COUNT0   .byte ? ; xmodem counter for timeouts
+XM_COUNT1   .byte ?
+XM_COUNT2   .byte ?
+XM_TIMEOUT  .byte ? ; xmodem timeout 
+LINE_CNT    .byte ? ; current number of characters in line buffer
+LINE_READ   .byte ? ; line buffer read pointer
+            .endvirtual
+            
+            .virtual RAM_END-255
+LINE_BUF    .fill LINE_LEN ; size of line buffer
+            .align $10
+XM_BUFFER   .fill XM_BUF_LEN
+END
             .endvirtual
 
 reset:
@@ -49,12 +80,12 @@ ready:
         lda #PROMPT
         jsr serial_out  ; show prompt
 
-read_char:
+_read_char:
         jsr serial_wait
         jsr serial_out  ; echo
         jsr tolower     ; convert to lower case
         cmp #LF
-        beq read_char   ; ignore line feed
+        beq _read_char   ; ignore line feed
         cmp #CR
         beq newline
         ldy LINE_CNT
@@ -63,19 +94,19 @@ read_char:
         dey             ; remove last char from buffer
         bmi _reset
         sty LINE_CNT
-        jmp read_char
+        jmp _read_char
         
 _reset: ldy #0          ; beyond start       
         sty LINE_CNT
-        jmp read_char
-
+        jmp _read_char
+        
 _store_char:
-        cpy #BUF_LEN - 1
+        cpy #LINE_LEN - 1
         bcs overflow
         sta LINE_BUF,y
         iny
         sty LINE_CNT
-        jmp read_char
+        jmp _read_char
 
 newline:
         jsr write_eol
@@ -83,13 +114,13 @@ newline:
         beq ready       ; ignore emty lines
         lda LINE_BUF
         cmp #'?'        ; command "?": help
-        bne _chk_l
+        bne _chk_x
         jsr cmd_help
         jmp ready
-_chk_l:
-        cmp #'l'        ; command "l": download
+_chk_x:
+        cmp #'x'        ; command "x": xmodem
         bne _chk_r
-        jsr cmd_download
+        jsr cmd_xmodem
         jmp ready
 _chk_r: 
         cmp #'r'        ; command "r": read memory
@@ -137,93 +168,163 @@ cmd_help:
         jsr write_msg
         rts
 
-; example:
-; :07100000EAEAEAEA4C0010E5
-; :00000001FF
-; :<byte count><address><type><data><cks>
-; type: 00 -> data, 01 -> eof
-cmd_download:
-        lda #<MSG_DL_START
-        sta MSGL
-        lda #>MSG_DL_START
-        sta MSGH
-        jsr write_msg
-
-_read_start:
-        jsr serial_wait
-        cmp #$1b ; ESC
-        beq _err_abort
-        cmp #':'
-        bne _read_start
-
-        lda #$00
-        sta LD_CHECKSUM ; reset checksum
-_next:
-        jsr read_hex    ; read byte count
-        tax             ; x -> byte count
-        jsr read_hex    ; read address MSB
-        sta LD_ADDRESSH
-        jsr read_hex    ; read address LSB
-        sta LD_ADDRESSL
-        jsr read_hex    ; read record type
-        beq _data       ; 0 -> data
-        cmp #$01        ; 1 -> eof
-        bne _err_unk
-_eof:          
-        jsr read_hex    ; read checksum
-        lda LD_CHECKSUM
-        bne _err_cks    ; checksum must be 0
-
-        lda #<MSG_DL_END
-        sta MSGL
-        lda #>MSG_DL_END
-        sta MSGH
-        jsr write_msg
-        
+; xmodem transfer
+; x1000
+cmd_xmodem:
+        lda LINE_CNT
+        cmp #5
+        beq _start
+        jsr show_syntax
         rts
-_data:  
-        ldy #0          ; x -> byte index
-_read_byte:
-        jsr read_hex    ; read data byte
-        sta (LD_ADDRESSL),y
-        iny
-        dex             ; decrement byte count
-        bne _read_byte
-        jsr read_hex    ; read checksum
-        lda LD_CHECKSUM
-        bne _err_cks    ; checksum must be 0
-        lda #'.'        ; send '.' as acknowledgmenet
+_start:
+        lda #<MSG_XM_START
+        sta MSGL
+        lda #>MSG_XM_START
+        sta MSGH
+        jsr write_msg
+        lda #1
+        sta LINE_READ
+        jsr read_byte
+        sta XM_ADDRH
+        jsr read_byte
+        sta XM_ADDRL
+        lda #0
+        sta XM_ERROR
+        lda #1
+        sta XM_BLK_CNT
+        lda #CLOCK_MHZ*4 ; set 8sec timeout
+        sta XM_TIMEOUT 
+_start_nak:
+        lda #NAK
         jsr serial_out_no_wait
-        jmp _read_start;
-
-_err_unk:
-        lda #<MSG_UNK_REC
+_wait_packet:        
+        jsr _wait_byte
+        bcs _char
+        jmp _start_nak ; repeat NAK
+_char:
+        cmp #SOH
+        beq _soh
+        cmp #EOT
+        beq _eot
+        cmp #CAN
+        beq _can
+        lda #<MSG_XM_ABORT
         sta MSGL
-        lda #>MSG_UNK_REC
+        lda #>MSG_XM_ABORT
         sta MSGH
         jsr write_msg
         rts
-
-_err_cks:
-        lda #<MSG_CKS_ERR
-        sta MSGL
-        lda #>MSG_CKS_ERR
-        sta MSGH
-        jsr write_msg
+_can:
+        rts        
+_eot:
+        lda  #ACK    ; send ACK
+        jsr serial_out_no_wait
         rts
-
-_err_abort:
-        lda #<MSG_DL_ABORT
-        sta MSGL
-        lda #>MSG_DL_ABORT
-        sta MSGH
-        jsr write_msg
+_soh:
+        ldx #0
+        sta XM_BUFFER, x
+        inx
+        lda #CLOCK_MHZ*1 ; set 2sec timeout
+        sta XM_TIMEOUT 
+_next_byte:
+        ; processing time for as single byte waiting in the receive data register is 67us
+        ; for 115200 bauds bytes may come in theoretically every 87us      
+        jsr _wait_byte
+        bcs _store_byte
+        lda #XM_ERR_TIMEOUT
+        sta XM_ERROR
+        rts
+_store_byte:        
+        sta XM_BUFFER, x
+        inx
+        cpx #XM_BUF_LEN
+        bne _next_byte ; block incomplete -> get another byte
+_block_complete:
+        ldx #1 ; block number
+        lda XM_BUFFER, x
+        sta XM_BLK
+        ldx #2 ; inverse blocknumber
+        lda XM_BUFFER, x
+        eor #$ff ; one's complement
+        cmp XM_BLK
+        beq _number_ok
+        lda #XM_ERR_BLOCKNO
+        sta XM_ERROR
+        jmp _start_nak ; block number mismatch -> start over with NAK 
+_number_ok:
+        lda XM_BLK_CNT
+        cmp XM_BLK
+        beq _count_ok
+        lda #XM_ERR_SEQ
+        sta XM_ERROR
+        jmp _start_nak ; block number sequence error -> start over with NAK 
+_count_ok:
+        lda #0
+        sta XM_CKS
+        ldx #3 ; first data byte
+_next_cks:        
+        lda XM_BUFFER,x ; load byte from buffer
+        clc
+        adc XM_CKS
+        sta XM_CKS
+        inx
+        cpx #XM_BUF_LEN-1 ; exclude ckecksum
+        bne _next_cks
+        lda XM_BUFFER,x ; load received checksum
+        cmp XM_CKS
+        beq _cks_ok
+        lda #XM_ERR_CKS
+        sta XM_ERROR
+        jmp _start_nak ; checksum error -> start over with NAK 
+_cks_ok:
+        ldx #3 ; first data byte
+        ldy #0
+_next_write:
+        lda XM_BUFFER,x ; load byte from buffer
+        inx
+        sta (XM_ADDRL),y
+        iny
+        cpx #XM_BUF_LEN-1 ; exclude checksum
+        bne _next_write
+        clc
+        lda XM_ADDRL
+        adc #128 ; increment write pointer by 128
+        sta XM_ADDRL
+        lda XM_ADDRH
+        adc #0
+        sta XM_ADDRH
+        inc XM_BLK_CNT ; increment next expected block number
+        lda  #ACK    ; send ACK
+        jsr serial_out_no_wait
+        jmp _wait_packet
+        
+; read byte with timeout
+; A(out) = character received
+; C(out) = set if character returned
+; XM_TIMEOUT = number of 2sec timeouts (1=2sec, 4=8sec)
+_wait_byte:
+        lda #0
+        sta XM_COUNT0
+        sta XM_COUNT1
+        sta XM_COUNT2
+_wait_char:        
+        jsr serial_in
+        bcs _return
+        inc XM_COUNT0
+        bne _wait_char        
+        inc XM_COUNT1
+        bne _wait_char        
+        inc XM_COUNT2
+        lda XM_COUNT2
+        cmp XM_TIMEOUT
+        bne _wait_char
+        clc
+_return:        
         rts
 
 ; read command
 ; line "r1000"
 ; block "r1000-1020"
-
 cmd_read:
         lda LINE_CNT
         cmp #5
@@ -234,11 +335,12 @@ cmd_read:
         rts
 
 _line:
-        ldy #1
-        jsr read_addr
+        lda #1
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_STARTH
-        stx ADDR_STARTL
-        txa
+        jsr read_byte
+        sta ADDR_STARTL
         clc             ; end address = start address + 8
         adc #7
         sta ADDR_ENDL
@@ -257,36 +359,22 @@ _overflow:
         rts
 
 _block:
-        ldy #1
-        jsr read_addr
+        lda #1
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_STARTH
-        stx ADDR_STARTL
-        ldy #6
-        jsr read_addr
+        jsr read_byte
+        sta ADDR_STARTL
+        lda #6
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_ENDH
-        stx ADDR_ENDL
+        jsr read_byte
+        sta ADDR_ENDL
         jsr read_block
         rts
 
-; reads address (4 hex characters)  from line buffer
-; Y(in)  start index in line buffer
-; A(out) address LSB
-; X(out) address MSB
-read_addr:
-        lda LINE_BUF,y
-        iny
-        ldx LINE_BUF,y
-        iny
-        jsr bytetobin
-        pha
-        lda LINE_BUF,y
-        iny
-        ldx LINE_BUF,y
-        jsr bytetobin
-        tax
-        pla
-        rts
-        
+
 ; read block from ADDR_START to ADDR_END
 read_block:
         lda ADDR_STARTH
@@ -335,26 +423,24 @@ _cont:
         lda LINE_BUF,y
         cmp #':'
         bne _error
-        ldy #1
-        jsr read_addr
+        lda #1
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_STARTH
-        stx ADDR_STARTL
-        ldy #6 ; first byte
+        jsr read_byte
+        sta ADDR_STARTL
+        lda #6 ; first byte
+        sta LINE_READ
 _next:        
-        lda LINE_BUF,y
-        iny
-        ldx LINE_BUF,y
-        iny
-        jsr bytetobin
-        sty TEMP
+        jsr read_byte
         ldy #0
         sta (ADDR_STARTL),y
-        ldy TEMP
         inc ADDR_STARTL
         bne _chk_end
         inc ADDR_STARTH
-_chk_end:        
-        cpy LINE_CNT
+_chk_end:
+        lda LINE_READ
+        cmp LINE_CNT
         bcc _next 
         rts
 
@@ -372,20 +458,21 @@ cmd_fill:
         lda LINE_BUF,y
         cmp #':'
         bne _error
-        ldy #1
-        jsr read_addr
+        lda #1
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_STARTH
-        stx ADDR_STARTL
-        ldy #6
-        jsr read_addr
+        jsr read_byte
+        sta ADDR_STARTL
+        lda #6
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_ENDH
-        stx ADDR_ENDL
-        ldy #11
-        lda LINE_BUF,y
-        iny
-        ldx LINE_BUF,y
-        iny
-        jsr bytetobin
+        jsr read_byte
+        sta ADDR_ENDL
+        lda #11
+        sta LINE_READ
+        jsr read_byte
         sta TEMP
 _next:        
         ldy #0
@@ -414,14 +501,18 @@ cmd_go:
         lda LINE_CNT
         cmp #5
         bne _error
-        ldy #1
-        jsr read_addr
+        lda #1
+        sta LINE_READ
+        jsr read_byte
         sta ADDR_STARTH
-        stx ADDR_STARTL
-        jmp (ADDR_STARTL)
+        jsr read_byte
+        sta ADDR_STARTL
+        jsr _jsr
+        rts
 _error:        
         jsr show_syntax
         rts
+_jsr    jmp  (ADDR_STARTL)        
         
 show_syntax:
         lda #<MSG_SYNTAX
@@ -429,7 +520,22 @@ show_syntax:
         lda #>MSG_SYNTAX
         sta MSGH
         jsr write_msg
-        rts 
+        rts
+     
+; reads byte (2 hex characters)  from line buffer
+; A(out) byte
+read_byte:
+        sty TEMP_Y
+        ldy LINE_READ
+        lda LINE_BUF,y
+        iny
+        ldx LINE_BUF,y
+        iny
+        sty LINE_READ
+        jsr bytetobin
+        ldy TEMP_Y
+        rts
+
 
 ; write hex nibble to serialinterface
 ; A(in) nibble
@@ -447,7 +553,7 @@ _digit:
         jsr serial_out
         rts
 
-; write hex byte to serialinterface
+; write hex byte to serial interface
 ; A(in) byte
 write_byte:
         tax
@@ -460,27 +566,7 @@ write_byte:
         and #$0f
         jsr write_nibble ; write lower nibble
         rts
-
-; reads hex byte from serial interface
-; A(out) = bytes
-; adds byte to checksum
-read_hex:
-        jsr serial_wait
-        jsr hextobin
-        asl
-        asl
-        asl
-        asl
-        sta TEMP        ; store upper nibble
-        jsr serial_wait
-        jsr hextobin
-        ora TEMP
-        sta TEMP
-        clc ; update checksum
-        adc LD_CHECKSUM 
-        sta LD_CHECKSUM
-        lda TEMP
-        rts
+                
         
 ; converts ascii hex character to binary
 ; A(in) = hex character
@@ -523,13 +609,13 @@ bytetobin:
         asl
         sta TEMP        ; store upper nibble
         txa
-        jsr hextobin
+        jsr hextobin ; (does change TEMP)
         ora TEMP
         rts
 
 ; initializes ACIA with 115200 8N1, no interrupts
 serial_init:
-        lda #%00010000  ; 1 stop bit, 8 data bits, 115200bps, internal clock
+        lda #%00010000 ; 1 stop bit, 8 data bits, 115200bps, internal clock
         sta ACIA_CTL
         lda #%00001011  ; no parity, no echo, no TX interrupts, /RTS=low, no RX interrupts, /DTR=low
         sta ACIA_CMD
@@ -548,7 +634,6 @@ serial_out:
 ; A(in) = character to sent
 serial_out_no_wait:
         sta ACIA_DATA
-        jsr wait100us   ; 115200bps -> 87us/character
         rts        
 
 ; reads character from serial interface
@@ -587,7 +672,7 @@ wait100us:
         sty TEMP           ; CYC=3
         ldy #4*CLOCK_MHZ-1 ; CYC=2
 _loop:
-        jsr wait20clk
+        jsr wait20clk ; (does change TEMP)
         dey       ; CYC=2
         bne _loop ; CYC=3
         nop       ; CYC=2
@@ -607,31 +692,26 @@ _loop:
 _done:
         rts
 
-write_char:
-        jsr serial_out
 write_eol:        
         lda #CR
         jsr serial_out
         lda #LF
         jsr serial_out
         rts
-
+        
 nmi:
         rti
 
 irq:
-        rti
-                
-MSG_WELCOME:   .text "Monitor 1.0.1", CR, LF, 0
+        rti            
+
+MSG_WELCOME:   .text "Monitor 1.1", CR, LF, 0
 MSG_UNK_CMD:   .text "unknown command", CR, LF, 0
-MSG_DL_START:  .text "download started", CR, LF, 0
-MSG_DL_END:    .text  CR, LF, "download succeeded", CR, LF, 0
-MSG_DL_ABORT:  .text  CR, LF, "download aborted", CR, LF, 0
-MSG_UNK_REC:   .text "unknown record type", CR, LF, 0
-MSG_CKS_ERR:   .text "checksum error", CR, LF, 0
+MSG_XM_START:  .text "xmodem started", CR, LF, 0
+MSG_XM_ABORT:  .text "xmodem aborted", CR, LF, 0
 MSG_OVERFLOW:  .text "line buffer overlfow", CR, LF, 0
 MSG_HELP:      .text "?              show help", CR, LF
-               .text "l              start intel hex loader", CR, LF
+               .text "x1000          xmodem transfer", CR, LF
                .text "r1000          read memory line", CR, LF
                .text "r1000-101f     read memory block", CR, LF
                .text "w1000:0011aabb write block", CR, LF
