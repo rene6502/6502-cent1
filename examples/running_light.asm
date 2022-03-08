@@ -31,7 +31,11 @@ INDEX_B     .byte ?
             .endvirtual
 
 reset:
-        lda #$ff          ; set all VIA ports to output
+        cld             ; clear decimal mode
+        ldx #$ff        ; initialize stack pointer 
+        txs
+        
+        lda #$ff        ; set all VIA ports to output
         sta VIA0_DDRA
         sta VIA0_DDRB
         sta VIA1_DDRA

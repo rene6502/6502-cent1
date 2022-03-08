@@ -21,6 +21,10 @@ MSGH        .byte ? ; message address MSB
 
 
 start:
+        cld             ; clear decimal mode
+        ldx #$ff        ; initialize stack pointer 
+        txs
+
         jsr serial_init
  
         lda #<MSG_HELLO

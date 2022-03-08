@@ -66,6 +66,9 @@ END
 
 reset:
         cld             ; clear decimal mode
+        ldx #$ff        ; initialize stack pointer 
+        txs
+        
         jsr wait100us
         jsr serial_init
         lda #<MSG_WELCOME

@@ -33,6 +33,10 @@ MSGH        .byte ? ; message address MSB
 
 
 reset:
+        cld             ; clear decimal mode
+        ldx #$ff        ; initialize stack pointer 
+        txs
+
         jsr serial_init
         lda #$ff
         sta VIA0_DDRA
